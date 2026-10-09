@@ -172,15 +172,24 @@ async function loadCities(){
   const {data,error}=await sb.from("cities").select("id,data,live,ord").eq("live",true).order("ord");
   if(error)throw error;
   S.cities=(data||[]).map(c=>({id:c.id,...c.data}));
-  if(!S.cities.some(c=>c.id===S.city))S.city=(S.cities[0]||{}).id||"";
+  let stored="";try{stored=localStorage.getItem("jh_city")||""}catch(_){}
+  const known=S.cities.some(c=>c.id===stored);
+  S.city=known?stored:((S.cities[0]||{}).id||"");
+  /* First visit with more than one city live: ask before showing a feed, rather
+     than silently defaulting someone into the wrong district. */
+  S.cityPick=!known&&S.cities.length>1;
   loadArea();
 }
 /* The chosen constituency is remembered per city, so switching city does not
    carry over a constituency that does not exist there. */
 function loadArea(){try{S.area=localStorage.getItem("jh_area:"+S.city)||""}catch(_){S.area=""}}
 function setCity(id){
-  if(!id||id===S.city)return;
-  S.city=id;try{localStorage.setItem("jh_city",id)}catch(_){}
+  if(!id)return;
+  const same=id===S.city;
+  S.cityPick=false;
+  try{localStorage.setItem("jh_city",id)}catch(_){}
+  if(same){render();return}
+  S.city=id;
   loadArea();
   S.reps=S.bodies=S.events=S.posts=null;S.counts={};S.thread=null;S.replies=null;
   S.wf={status:"all",body:"",area:"",sort:"new"};S.cityPick=false;
@@ -538,6 +547,7 @@ const screens = {
   }
   const mine=(S.posts||[]).filter(p=>p.user_id===S.user.id);
   let h=`<h1>${t("t_acc")}</h1>${S.official?`<div class="confirm" style="margin-bottom:12px"><b><span class="offb">✔ ${t("official_acc")}</span> ${t("official_for")} ${esc(tagLabel(S.official))}</b><p class="note" style="margin:4px 0 0">${t("official_note")}</p></div>`:""}<div class="row"><span>${t("signed_as")}</span><span>${esc(S.user.email||"")}</span></div><p class="note">${t("private_note")}</p>
+   ${(S.cities||[]).length>1?`<label for="city-pick-me" style="margin-top:12px">${t("change_city")}</label><select id="city-pick-me">${(S.cities||[]).map(c=>opt(c.id,cityName(c),S.city)).join("")}</select>`:""}
    <label for="area" style="margin-top:12px">${t("my_area")}</label><select id="area"><option value="">${t("choose")}</option>${mlas().map(r=>opt(r.id,r.constituency,S.area)).join("")}</select>
    <h2>${t("my_posts")}</h2>${mine.length?mine.map(p=>postCard(p,{link:true})).join(""):`<p class="note">${t("no_my_posts")}</p>`}`;
   if(S.isAdmin)h+=`<a class="btn" href="#admin" style="margin-top:20px">${t("adm_h")} · ${t("q_h")} (${num(pendingQueue().length)})</a>`;
@@ -941,6 +951,16 @@ function parseRoute(){
   if(name==="rep"&&id)return{name:"rep",id};
   return{name:"feed",id:null};
 }
+/* Shown once, on a first visit, when more than one city is live. Jan Hisaab is
+   district by district, so guessing someone's district is worse than asking. */
+function cityChooser(){
+  return `<h1>${t("pick_city_h")}</h1><p class="lead">${t("pick_city_p")}</p>
+   <div class="stack">${(S.cities||[]).map(c=>`<button class="item" data-setcity="${esc(c.id)}" style="width:100%;text-align:left;border:1px solid var(--line);border-radius:12px;background:none;cursor:pointer">
+     <div class="av">${esc(cityName(c).slice(0,1))}</div>
+     <div class="m"><div class="n">${esc(cityName(c))}</div><div class="s">${esc(L(c.scope)||"")}</div></div>
+     <span class="chev">›</span></button>`).join("")}</div>
+   <p class="note" style="margin-top:14px">${t("pick_city_note")}</p>`;
+}
 /* The city chooser sits in the header, next to the language buttons. It stays
    hidden while only one city is live, so Nashik-only users never see it. */
 function renderCityPicker(){
@@ -964,8 +984,8 @@ function render(){
   const tab={post:"feed",rep:"reps",admin:"me"}[S.route.name]||S.route.name;
   const ab=document.getElementById("admin-btn");if(ab){const n=S.isAdmin?pendingQueue().length:0;ab.hidden=!S.isAdmin;ab.innerHTML=`${t("admin")}${n?` <b>${num(n)}</b>`:""}`;document.title=(n?`(${n}) `:"")+brandName()+" · "+t("motto")}
   document.querySelectorAll("nav button").forEach(b=>b.dataset.tab===tab?b.setAttribute("aria-current","page"):b.removeAttribute("aria-current"));
-  document.getElementById("fab").hidden=!(configured&&(S.route.name==="feed"||S.route.name==="board"));
-  view.innerHTML=screens[S.route.name]();
+  document.getElementById("fab").hidden=!(configured&&!S.cityPick&&(S.route.name==="feed"||S.route.name==="board"));
+  view.innerHTML=S.cityPick?cityChooser():screens[S.route.name]();
 }
 function renderSoon(){const a=document.activeElement;if(a&&view.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)){deferred=true;return}render()}
 document.addEventListener("focusout",()=>setTimeout(()=>{if(deferred)renderSoon()},0));
@@ -982,6 +1002,7 @@ document.addEventListener("click",async e=>{
   const el=e.target.closest("button,a");if(!el)return;
   const d=el.dataset;
   if(d.l){lang=d.l;try{localStorage.setItem("jh_lang",lang)}catch(_){}render();if(C)renderComposer();return}
+  if(d.setcity){setCity(d.setcity);return}
   if(d.tab){location.hash="#"+d.tab;return}
   if(d.after){S.afterSignIn=d.after;return}
   if(el.id==="fab"||el.hasAttribute("data-compose")){openComposer("post");return}
@@ -1040,7 +1061,7 @@ document.addEventListener("click",e=>{if(e.target.id==="c-bg")closeComposer()});
 document.addEventListener("change",e=>{
   const id=e.target.id,v=e.target.value,d=e.target.dataset;
   if(id==="area"){S.area=v;try{localStorage.setItem("jh_area:"+S.city,v)}catch(_){}render();return}
-  if(id==="city-pick"){setCity(v);return}
+  if(id==="city-pick"||id==="city-pick-me"){setCity(v);return}
   if(id==="wf-body"){S.wf.body=v;render();return}
   if(id==="wf-area"){S.wf.area=v;render();return}
   if(id==="age"){S.auth.age=e.target.checked;return}
