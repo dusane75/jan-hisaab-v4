@@ -1,4 +1,5 @@
-/* Jan Hisaab Nashik — app logic (Supabase backend) */
+/* Jan Hisaab — app logic (Supabase backend). One deployment, many cities:
+   each city brings its own departments, leaders, zones, routing and boundary. */
 (function(){
 "use strict";
 const CFG = window.JH_CONFIG || {};
@@ -33,24 +34,47 @@ function ago(iso){
 const isLink = u => typeof u==="string" && u.length<=500 && /^https:\/\/[a-z0-9.-]+\.[a-z]{2,}(\/[^\s"'<>]*)?$/i.test(u);
 function linkLabel(u){try{const h=new URL(u).hostname.replace(/^www\./,"");if(/(^|\.)(drive|docs)\.google\.com$/.test(h))return t("drive_file");if(/photos\.(google\.com|app\.goo\.gl)$/.test(h))return t("gphotos");return h}catch(_){return"link"}}
 const STATUSES = ["open","seen","work","done"];
-const CITY_AREAS = ["mla-nashik-central","mla-nashik-east","mla-nashik-west","mla-deolali"], MALEGAON_AREAS = ["mla-malegaon-central"];
-/* Which fields each department can actually act on.
-   pin  : the problem sits at a spot on the map (street, plot, pipeline) -> ask for GPS + landmark, and for a constituency
-   ward : the department works prabhag-wise -> ask for the prabhag (NMC only; prabhag 1-31 is its numbering)
-   place: label for the one free-text "where" field, so a bus depot isn't asked for a street name
-   Anything not listed falls back to PIN_FORM below. */
-const BODY_FORM = {
-  nmc:{pin:true,ward:true}, "malegaon-mc":{pin:true},
-  gp:{pin:true}, zp:{pin:true}, pwd:{pin:true}, nhai:{pin:true}, wrd:{pin:true}, mpcb:{pin:true},
-  police:{pin:true,place:"pl_police"}, msedcl:{pin:true,place:"pl_msedcl"},
-  msrtc:{pin:false,place:"pl_msrtc"}, railway:{pin:false,place:"pl_railway"},
-  health:{pin:false,place:"pl_health"}, kumbh:{pin:false,place:"pl_kumbh"},
-  collector:{pin:false,place:"pl_office"}
+/* ---------- the current city ----------
+   Everything that used to be a Nashik constant -- the map boundary, the ward
+   count, the zone names, the problem routing, the escalation chain -- now comes
+   from the city's own record, so adding a city is data entry, not a code change.
+   The fallbacks below are Nashik's old values, used only if a city record is
+   missing a field. */
+const CITY_FALLBACK = {
+  bounds:{s:19.3,n:21.0,w:73.3,e:75.1},
+  zones:[{id:"city",areas:[]},{id:"rural",areas:[],fallback:true}],
+  wards:{}, escDays:[0,7,14,21,30,45], heads:{}
 };
+const city = () => (S.cities||[]).find(c=>c.id===S.city) || CITY_FALLBACK;
+const cityVal = k => { const v=city()[k]; return (v==null||(Array.isArray(v)&&!v.length)) ? CITY_FALLBACK[k] : v };
+const cityName = c => L((c||city()).name) || (c||city()).id || "";
+const brandName = () => "Jan Hisaab" + (cityName() ? " " + cityName() : "");
+/* Hashtags stay ASCII so they work on every platform. */
+const cityTag = () => {const n=String((city().name||{}).en||"").replace(/[^A-Za-z0-9]/g,"");
+  return "#JanHisaab"+n+(n?" #"+n:"")};
+const zones = () => cityVal("zones");
+const zoneLabel = z => L(z.label) || t("w_"+z.id) || z.id;
+const escDays = () => cityVal("escDays");
+const routeOf = cat => (city().route || ROUTE || {})[cat];
+/* Which zone a constituency sits in -- the generalised form of the old
+   city / Malegaon / rural split. */
+const whereFor = a => {
+  if(!a) return "";
+  const z = zones().find(x=>(x.areas||[]).includes(a));
+  if(z) return z.id;
+  const fb = zones().find(x=>x.fallback);
+  return fb ? fb.id : "";
+};
+/* Which fields a department can actually act on. Each department carries its own
+   rules now, so a bus-pass complaint is never asked for a ward number.
+   pin   : the problem sits at a spot on the map -> ask for GPS and a constituency
+   place : label for the one free-text "where" field
+   Wards come from the city record, keyed by department. */
 const PIN_FORM = {pin:true};
-const formFor = id => (id && BODY_FORM[id]) || PIN_FORM;
+const formFor = id => (id && (bodyById(id)||{}).form) || PIN_FORM;
 const needsPin  = id => !!formFor(id).pin;
-const needsWard = id => !!formFor(id).ward;
+const wardsFor  = id => (id && cityVal("wards")[id]) || 0;
+const needsWard = id => wardsFor(id) > 0;
 const placeKey  = id => formFor(id).place || "f_place";
 const ICON = {
   heart:'<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>',
@@ -65,6 +89,7 @@ const ICON = {
 /* ---------- state ---------- */
 const S = {
   route:{name:"feed",id:null}, user:null, isAdmin:false,
+  cities:null, city:"", cityPick:false,
   reps:null, events:null, bodies:null, meta:null, failed:false,
   posts:null, counts:{}, mySup:new Set(), thread:null, replies:null,
   wf:{status:"all",body:"",area:"",sort:"new"}, repFilter:"all",
@@ -72,15 +97,14 @@ const S = {
   auth:{mode:"up",email:"",password:"",err:"",busy:false,age:false}, afterSignIn:null, newPw:"", accDelArm:false, reported:new Set(),
   view:"list", rejFor:{}, kitFor:null, lead:null, lastPending:null, official:null, officials:null, offDraft:{email:"",entity:""}
 };
-try{S.area=localStorage.getItem("jh_area")||""}catch(e){}
+try{S.city=localStorage.getItem("jh_city")||""}catch(e){}
 let C = null; // composer state
 
 /* ---------- derived ---------- */
 const bodyById = id => (S.bodies||[]).find(b=>b.id===id);
 const repById = id => (S.reps||[]).find(r=>r.id===id);
 const mlas = () => (S.reps||[]).filter(r=>r.role==="mla").sort((a,b)=>a.constituency.localeCompare(b.constituency));
-const whereFor = a => CITY_AREAS.includes(a)?"city":MALEGAON_AREAS.includes(a)?"malegaon":a?"rural":"";
-function suggest(cat,where){const r=ROUTE[cat];if(!r)return[];return ((where&&r[where])||r.all||[]).filter(id=>bodyById(id))}
+function suggest(cat,where){const r=routeOf(cat);if(!r)return[];return ((where&&r[where])||r.all||[]).filter(id=>bodyById(id))}
 const createdDay = p => ymd(new Date(p.approved_at||p.created_at));
 function waitOf(p){return p.status==="done"?daysBetween(createdDay(p),p.fixed_on||todayStr()):daysBetween(createdDay(p),todayStr())}
 const isLive = p => p.approved!==false && !p.hidden;
@@ -91,23 +115,26 @@ const ROLE_ORDER = {guardian:0,collector:1,mayor:2,dymayor:3,commissioner:4,cp:5
 const OFFICIAL_ROLES = ["guardian","collector","mayor","dymayor","commissioner","cp"];
 const roleRep = role => (S.reps||[]).find(r=>r.role===role);
 const corpsOf = n => n ? (S.reps||[]).filter(r=>r.role==="corporator"&&+r.prabhag===+n) : [];
-/* Escalation ladder: who is answerable on which day (0 / 7 / 14 / 21 / 30 / 45). Day 21 matches the Aaple Sarkar & CPGRAMS deadline. */
-const ESC_DAYS=[0,7,14,21,30,45];
-function headOf(bodyId){return bodyId==="nmc"?roleRep("commissioner"):bodyId==="police"?roleRep("cp"):bodyId==="collector"?roleRep("collector"):null}
+/* Escalation ladder: who is answerable on which day. Nashik uses 0/7/14/21/30/45,
+   where day 21 matches the Aaple Sarkar and CPGRAMS deadline; each city sets its own.
+   "heads" maps a department to the role that answers for it. */
+function headOf(bodyId){const r=cityVal("heads")[bodyId];return r?roleRep(r):null}
+const isUrban = w => !!(zones().find(z=>z.id===w)||{}).urban;
 function ladderFor(p){
-  const w=whereFor(p.area)||"rural", b=bodyById(p.body_id), mla=repById(p.area), mp=mla&&repById(mla.mp), head=headOf(p.body_id);
-  const mayor=(w==="city")?roleRep("mayor"):null, gm=roleRep("guardian"), col=roleRep("collector");
-  const corps=w==="city"?corpsOf(p.prabhag):[];
+  const D=escDays(), urban=isUrban(whereFor(p.area));
+  const b=bodyById(p.body_id), mla=repById(p.area), mp=mla&&repById(mla.mp), head=headOf(p.body_id);
+  const mayor=urban?roleRep("mayor"):null, gm=roleRep("guardian"), col=roleRep("collector");
+  const corps=urban?corpsOf(p.prabhag):[];
   return [
-    {day:0,key:"L1",ids:[p.body_id].filter(Boolean),label:b?(L(b.short)||L(b.name)):t("L1")},
-    {day:7,key:w==="city"?"L2c":"L2r",ids:corps.map(r=>r.id),label:corps.length?corps.map(r=>r.name).join(", "):(w==="city"?t("L2c")+(p.prabhag?" "+t("prabhag_n")+" "+p.prabhag:""):t("L2r"))},
-    {day:14,key:"L3",ids:head?[head.id]:[],label:head?t(head.role)+" "+head.name:(b?L(b.head):t("L3"))},
-    {day:21,key:mayor?"L4":"L4r",ids:[mla&&mla.id,mayor&&mayor.id].filter(Boolean),label:[mla&&(t("mla")+" "+mla.name),mayor&&(t("mayor")+" "+mayor.name)].filter(Boolean).join(" · ")||t("L4r")},
-    {day:30,key:"L5",ids:mp?[mp.id]:[],label:mp?t("mp")+" "+mp.name:t("L5")},
-    {day:45,key:"L6",ids:[gm&&gm.id,col&&col.id].filter(Boolean),label:[gm&&(t("guardian")+" "+gm.name),col&&(t("collector")+" "+col.name)].filter(Boolean).join(" · ")||t("L6")}
+    {day:D[0],key:"L1",ids:[p.body_id].filter(Boolean),label:b?(L(b.short)||L(b.name)):t("L1")},
+    {day:D[1],key:urban?"L2c":"L2r",ids:corps.map(r=>r.id),label:corps.length?corps.map(r=>r.name).join(", "):(urban?t("L2c")+(p.prabhag?" "+t("prabhag_n")+" "+p.prabhag:""):t("L2r"))},
+    {day:D[2],key:"L3",ids:head?[head.id]:[],label:head?t(head.role)+" "+head.name:(b?L(b.head):t("L3"))},
+    {day:D[3],key:mayor?"L4":"L4r",ids:[mla&&mla.id,mayor&&mayor.id].filter(Boolean),label:[mla&&(t("mla")+" "+mla.name),mayor&&(t("mayor")+" "+mayor.name)].filter(Boolean).join(" · ")||t("L4r")},
+    {day:D[4],key:"L5",ids:mp?[mp.id]:[],label:mp?t("mp")+" "+mp.name:t("L5")},
+    {day:D[5],key:"L6",ids:[gm&&gm.id,col&&col.id].filter(Boolean),label:[gm&&(t("guardian")+" "+gm.name),col&&(t("collector")+" "+col.name)].filter(Boolean).join(" · ")||t("L6")}
   ];
 }
-function levelOf(p){const d=waitOf(p);let i=0;ESC_DAYS.forEach((x,ix)=>{if(d>=x)i=ix});return i}
+function levelOf(p){const d=waitOf(p);let i=0;escDays().forEach((x,ix)=>{if(d>=x)i=ix});return i}
 /* Days charged to whoever holds a problem on each day; leaders count the problems that reached them */
 function charges(list){
   const m={};const add=(id,days,reached,pend)=>{if(!id)return;const o=m[id]||(m[id]={days:0,reached:0,pend:0});o.days+=days;if(reached)o.reached++;if(pend)o.pend++};
@@ -140,16 +167,35 @@ function mentionables(){
 function tagLabel(id){const b=bodyById(id);if(b)return L(b.short)||L(b.name);const r=repById(id);if(r)return t(r.role)+" "+r.name.replace(/\(.*?\)/g,"").replace(/\s+/g," ").trim();return id}
 
 /* ---------- data ---------- */
+async function loadCities(){
+  const {data,error}=await sb.from("cities").select("id,data,live,ord").eq("live",true).order("ord");
+  if(error)throw error;
+  S.cities=(data||[]).map(c=>({id:c.id,...c.data}));
+  if(!S.cities.some(c=>c.id===S.city))S.city=(S.cities[0]||{}).id||"";
+  loadArea();
+}
+/* The chosen constituency is remembered per city, so switching city does not
+   carry over a constituency that does not exist there. */
+function loadArea(){try{S.area=localStorage.getItem("jh_area:"+S.city)||""}catch(_){S.area=""}}
+function setCity(id){
+  if(!id||id===S.city)return;
+  S.city=id;try{localStorage.setItem("jh_city",id)}catch(_){}
+  loadArea();
+  S.reps=S.bodies=S.events=S.posts=null;S.counts={};S.thread=null;S.replies=null;
+  S.wf={status:"all",body:"",area:"",sort:"new"};S.cityPick=false;
+  render();
+  (async()=>{try{await loadRef();await loadPosts();S.failed=false}catch(_){S.failed=true}render()})();
+}
 async function loadRef(){
   const tables=["reps","events","bodies","meta"];
-  const res=await Promise.all(tables.map(n=>sb.from(n).select("id,data")));
+  const res=await Promise.all(tables.map(n=>sb.from(n).select("id,data").eq("city",S.city)));
   if(res.some(r=>r.error))throw res.find(r=>r.error).error;
   const [reps,events,bodies,meta]=res.map(r=>r.data.map(x=>({id:x.id,...x.data})));
   S.reps=reps; S.bodies=bodies.sort((a,b)=>(a.order||99)-(b.order||99)); S.meta=(meta.find(m=>m.id==="info")||null);
   const today=todayStr();
   S.events=events.filter(e=>!e.date||e.date>=today).sort((a,b)=>(a.date||a.sortDate||"9999").localeCompare(b.date||b.sortDate||"9999"));
 }
-const POST_COLS="id,user_id,parent_id,caption,cat,area,place,body_id,mentions,links,media_path,media_type,status,fixed_on,hidden,created_at,approved,approved_at,reject_reason,lat,lng,prabhag,official_entity,kind,claimed_at";
+const POST_COLS="id,user_id,parent_id,caption,city,cat,area,place,body_id,mentions,links,media_path,media_type,status,fixed_on,hidden,created_at,approved,approved_at,reject_reason,lat,lng,prabhag,official_entity,kind,claimed_at";
 async function loadCounts(ids){
   for(let i=0;i<ids.length;i+=150){
     const {data,error}=await sb.rpc("post_counts",{ids:ids.slice(i,i+150)});
@@ -157,7 +203,7 @@ async function loadCounts(ids){
   }
 }
 async function loadPosts(){
-  const {data,error}=await sb.from("posts").select(POST_COLS).is("parent_id",null).order("created_at",{ascending:false}).limit(1000);
+  const {data,error}=await sb.from("posts").select(POST_COLS).eq("city",S.city).is("parent_id",null).order("created_at",{ascending:false}).limit(1000);
   if(error)throw error;
   S.posts=data; await loadCounts(data.map(p=>p.id));
 }
@@ -176,6 +222,16 @@ async function loadThread(id){
   if(p.error||r.error)throw (p.error||r.error);
   S.thread=p.data||false; S.replies=r.data||[];
   await loadCounts([id,...S.replies.map(x=>x.id)]);
+}
+/* A link shared on WhatsApp can point at a post in a city the reader has not
+   chosen. Follow the post rather than showing them an empty screen. */
+async function followPostCity(){
+  const p=S.thread;
+  if(!p||!p.city||p.city===S.city)return;
+  if(!(S.cities||[]).some(c=>c.id===p.city))return;
+  S.city=p.city;try{localStorage.setItem("jh_city",S.city)}catch(_){}
+  loadArea();
+  try{await loadRef();await loadPosts()}catch(_){S.failed=true}
 }
 async function refreshAll(){
   try{await loadPosts();await loadMine();S.failed=false}catch(e){S.failed=true}
@@ -315,7 +371,7 @@ function ownerBox(p){
 const screens = {
  feed(){
   const all=counted(),st=statsOf(all);
-  const banner=`<section class="boss"><div class="kicker">जन हिशोब · Jan Hisaab Nashik</div><h1>${t("hero_h")}</h1><p>${t("hero_p")}</p>
+  const banner=`<section class="boss"><div class="kicker">जन हिशोब · ${esc(brandName())}</div><h1>${t("hero_h")}</h1><p>${t("hero_p")}</p>
    <div class="nums"><div><b>${num(st.pend)}</b><span>${t("k_pending")}</span></div><div><b>${num(st.waitSum)}</b><span>${t("k_days")}</span></div><div><b>${num(st.done)}</b><span>${t("k_fixed")}</span></div></div>
    <div class="ctas"><button class="btn" data-compose style="background:var(--bg);color:var(--ink)">${t("post")}</button><a class="btn" href="#board" style="background:rgba(255,255,255,.14);color:var(--on-ink)">${t("hero_cta2")}</a></div>
    <p class="trust">${t("trust")}</p></section>`;
@@ -504,9 +560,9 @@ function kitCaptions(p){
   const tg=kitTags(p),d=waitOf(p),lv=levelOf(p),lad=ladderFor(p),b=bodyById(p.body_id);
   const where=[p.place,repById(p.area)&&repById(p.area).constituency,p.prabhag?t("prabhag_n")+" "+p.prabhag:""].filter(Boolean).join(", ");
   const status=p.status==="done"?`✅ ${t("st_done")} · ${num(d)} ${t("fixed_in")}`:`⏱ ${num(d)} ${t("wait")} · ${t("esc_now")}: ${lad[lv].label}`;
-  const ig=`${p.caption}\n\n📍 ${where}\n${status}\n🏛 ${b?L(b.name):""}\n\n${tg.ig.join(" ")}\n\n${t("motto")} · #JanHisaabNashik #JantaIsTheBoss #Nashik\n${SITE.replace(/^https?:\/\//,"")}`;
+  const ig=`${p.caption}\n\n📍 ${where}\n${status}\n🏛 ${b?L(b.name):""}\n\n${tg.ig.join(" ")}\n\n${t("motto")} · ${cityTag()} #JantaIsTheBoss\n${SITE.replace(/^https?:\/\//,"")}`;
   const short=p.caption.length>120?p.caption.slice(0,117)+"…":p.caption;
-  const x=`${short}\n📍 ${where}\n${status}\n${tg.x.slice(0,3).join(" ")}\n#JanHisaabNashik #JantaIsTheBoss`;
+  const x=`${short}\n📍 ${where}\n${status}\n${tg.x.slice(0,3).join(" ")}\n${cityTag()} #JantaIsTheBoss`;
   return {ig,x};
 }
 function kitHtml(p){
@@ -535,7 +591,7 @@ async function makeCard(p){
   x.fillStyle="#ffffff";x.fillRect(0,0,W,H);
   x.fillStyle="#4b2a7a";x.fillRect(0,0,W,190);
   x.fillStyle="#ffffff";x.font=`800 66px ${F}`;x.fillText("JANTA IS THE BOSS",56,98);
-  x.font=`600 34px ${F}`;x.globalAlpha=.85;x.fillText("जनता हीच मालक · Jan Hisaab Nashik",56,152);x.globalAlpha=1;
+  x.font=`600 34px ${F}`;x.globalAlpha=.85;x.fillText("जनता हीच मालक · "+brandName(),56,152);x.globalAlpha=1;
   let y=190;const photoH=600;
   if(p.media_path&&p.media_type==="image"){
     try{const img=await new Promise((res,rej)=>{const i=new Image();i.crossOrigin="anonymous";i.onload=()=>res(i);i.onerror=rej;i.src=mediaUrl(p.media_path)});
@@ -552,7 +608,7 @@ async function makeCard(p){
   const by=H-260;x.fillStyle=col;x.font=`800 120px ${F}`;x.fillText(String(d),56,by+100);
   const nw=x.measureText(String(d)).width;x.font=`700 40px ${F}`;x.fillText(done?t("fixed_in"):t("wait"),56+nw+24,by+56);
   x.fillStyle="#1c1a24";x.font=`400 32px ${F}`;const lad=ladderFor(p);x.fillText((done?t("st_done"):t("esc_now")+": "+lad[levelOf(p)].label).slice(0,52),56+nw+24,by+100);
-  x.fillStyle="#4b2a7a";x.fillRect(0,H-90,W,90);x.fillStyle="#ffffff";x.font=`700 34px ${F}`;x.fillText(SITE.replace(/^https?:\/\//,"")+"  ·  #JanHisaabNashik",56,H-34);
+  x.fillStyle="#4b2a7a";x.fillRect(0,H-90,W,90);x.fillStyle="#ffffff";x.font=`700 34px ${F}`;x.fillText(SITE.replace(/^https?:\/\//,"")+"  ·  "+cityTag().split(" ")[0],56,H-34);
   return await new Promise(res=>cv.toBlob(res,"image/png"));
 }
 async function loadOfficials(){const {data}=await sb.from("official_accounts").select("email,entity_id,added_at").order("added_at",{ascending:false});S.officials=data||[]}
@@ -676,7 +732,7 @@ function whereBlockHtml(){
   const pin=needsPin(C.body), opt_=` <span class="note">(${t("optional")})</span>`;
   const pk=placeKey(C.body);
   const area=`<div><label for="c-area">${t("constit")}${pin?"":opt_}</label><select id="c-area"><option value="">${t("choose")}</option>${mlas().map(r=>opt(r.id,r.constituency,C.area)).join("")}</select></div>`;
-  const where=pin?`<div><label for="c-where">${t("f_where")}</label><select id="c-where"><option value="">${t("choose")}</option>${["city","malegaon","rural"].map(w=>opt(w,t("w_"+w),C.where)).join("")}</select></div>`:"";
+  const where=pin?`<div><label for="c-where">${t("f_where")}</label><select id="c-where"><option value="">${t("choose")}</option>${zones().map(z=>opt(z.id,zoneLabel(z),C.where)).join("")}</select></div>`:"";
   const place=`<div><label for="c-place">${t(pk)}${pin?"":opt_}</label><input id="c-place" maxlength="120" placeholder="${esc(t(pk+"_ph"))}" value="${esc(C.place)}"></div>`;
   return `<div class="two">${area}${where}</div>
    ${pin?`<div id="c-loc">${locHtml()}</div>`:""}
@@ -689,16 +745,16 @@ function locHtml(){
 }
 function prabHtml(){
   if(!C||!needsWard(C.body)||C.where!=="city")return"";
-  return `<label for="c-prabhag">${t("prabhag")}</label><select id="c-prabhag"><option value="">${t("prabhag_any")}</option>${Array.from({length:31},(_,i)=>opt(String(i+1),t("prabhag_n")+" "+(i+1),String(C.prabhag||""))).join("")}</select>`;
+  return `<label for="c-prabhag">${t("prabhag")}</label><select id="c-prabhag"><option value="">${t("prabhag_any")}</option>${Array.from({length:wardsFor(C.body)},(_,i)=>opt(String(i+1),t("prabhag_n")+" "+(i+1),String(C.prabhag||""))).join("")}</select>`;
 }
-const DIST={s:19.3,n:21.0,w:73.3,e:75.1};
 async function getLocation(){
   if(!navigator.geolocation){C.loc="loc_none";refreshComposerParts();return}
   C.loc="busy";refreshComposerParts();
   navigator.geolocation.getCurrentPosition(async pos=>{
     if(!C)return;
     const la=+pos.coords.latitude.toFixed(5),lo=+pos.coords.longitude.toFixed(5);
-    if(la<DIST.s||la>DIST.n||lo<DIST.w||lo>DIST.e){C.loc="loc_out";refreshComposerParts();return}
+    const B=cityVal("bounds");
+    if(la<B.s||la>B.n||lo<B.w||lo>B.e){C.loc="loc_out";refreshComposerParts();return}
     C.lat=la;C.lng=lo;C.loc="";refreshComposerParts();
     try{
       const r=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&lat=${la}&lon=${lo}&accept-language=${lang}`,{headers:{"Accept":"application/json"}});
@@ -812,7 +868,7 @@ async function submitComposer(){
   try{
     media=await uploadMedia();
     const row=C.mode==="post"
-      ?{caption:cap,cat:C.cat,area:C.area||null,place:C.place.trim()||null,body_id:C.body,mentions:tagsOf(),links,media_path:media.path,media_type:media.type,lat:C.lat,lng:C.lng,prabhag:needsWard(C.body)&&C.prabhag?+C.prabhag:null}
+      ?{caption:cap,city:S.city,cat:C.cat,area:C.area||null,place:C.place.trim()||null,body_id:C.body,mentions:tagsOf(),links,media_path:media.path,media_type:media.type,lat:C.lat,lng:C.lng,prabhag:needsWard(C.body)&&C.prabhag?+C.prabhag:null}
       :{caption:cap,parent_id:C.parentId,media_path:media.path,media_type:media.type,kind:C.mode==="resolution"?"resolution":"reply"};
     const {data,error}=await sb.from("posts").insert(row).select(POST_COLS).single();
     if(error)throw error;
@@ -884,14 +940,28 @@ function parseRoute(){
   if(name==="rep"&&id)return{name:"rep",id};
   return{name:"feed",id:null};
 }
+/* The city chooser sits in the header, next to the language buttons. It stays
+   hidden while only one city is live, so Nashik-only users never see it. */
+function renderCityPicker(){
+  const wrap=document.getElementById("city-wrap"), sel=document.getElementById("city-pick");
+  if(!wrap||!sel)return;
+  const list=S.cities||[];
+  wrap.hidden=list.length<2;
+  if(wrap.hidden)return;
+  const want=list.map(c=>c.id+"|"+cityName(c)).join(",")+"|"+S.city;
+  if(sel.dataset.sig===want)return;
+  sel.dataset.sig=want;
+  sel.innerHTML=list.map(c=>opt(c.id,cityName(c),S.city)).join("");
+}
 let deferred=false;
 function render(){
   deferred=false;
   document.querySelectorAll("[data-t]").forEach(el=>el.textContent=t(el.dataset.t));
   document.documentElement.lang=lang;
   document.querySelectorAll("header .seg button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.l===lang));
+  renderCityPicker();
   const tab={post:"feed",rep:"reps",admin:"me"}[S.route.name]||S.route.name;
-  const ab=document.getElementById("admin-btn");if(ab){const n=S.isAdmin?pendingQueue().length:0;ab.hidden=!S.isAdmin;ab.innerHTML=`${t("admin")}${n?` <b>${num(n)}</b>`:""}`;document.title=(n?`(${n}) `:"")+"Jan Hisaab Nashik · "+t("motto")}
+  const ab=document.getElementById("admin-btn");if(ab){const n=S.isAdmin?pendingQueue().length:0;ab.hidden=!S.isAdmin;ab.innerHTML=`${t("admin")}${n?` <b>${num(n)}</b>`:""}`;document.title=(n?`(${n}) `:"")+brandName()+" · "+t("motto")}
   document.querySelectorAll("nav button").forEach(b=>b.dataset.tab===tab?b.setAttribute("aria-current","page"):b.removeAttribute("aria-current"));
   document.getElementById("fab").hidden=!(configured&&(S.route.name==="feed"||S.route.name==="board"));
   view.innerHTML=screens[S.route.name]();
@@ -901,7 +971,7 @@ document.addEventListener("focusout",()=>setTimeout(()=>{if(deferred)renderSoon(
 async function onRoute(){
   S.route=parseRoute();S.menuFor=null;S.shareFor=null;S.delArm=null;
   window.scrollTo(0,0);render();
-  if(S.route.name==="post"&&configured){try{await loadThread(S.route.id)}catch(e){S.failed=true}render()}
+  if(S.route.name==="post"&&configured){try{await loadThread(S.route.id);await followPostCity()}catch(e){S.failed=true}render()}
 }
 window.addEventListener("hashchange",onRoute);
 function toast(m){const d=document.createElement("div");d.className="toast";d.setAttribute("role","status");d.textContent=m;document.body.appendChild(d);setTimeout(()=>d.remove(),2800)}
@@ -942,7 +1012,7 @@ document.addEventListener("click",async e=>{
   if(d.sup){toggleSupport(d.sup);return}
   if(d.sharet){S.shareFor=S.shareFor===d.sharet?null:d.sharet;S.menuFor=null;render();return}
   if(d.more){S.menuFor=S.menuFor===d.more?null:d.more;S.shareFor=null;S.delArm=null;render();return}
-  if(d.nshare){const p=findPost(d.nshare);try{await navigator.share({title:"Jan Hisaab Nashik",text:p?p.caption.slice(0,200):"",url:shareUrl(d.nshare)})}catch(_){}return}
+  if(d.nshare){const p=findPost(d.nshare);try{await navigator.share({title:brandName(),text:p?p.caption.slice(0,200):"",url:shareUrl(d.nshare)})}catch(_){}return}
   if(d.copy){try{await navigator.clipboard.writeText(d.copy);toast(t("copied"))}catch(_){toast(d.copy)}return}
   if(d.report){reportPost(d.report);S.menuFor=null;render();return}
   if(d.hide){const p=findPost(d.hide);if(p)updatePost(d.hide,{hidden:!p.hidden});return}
@@ -968,7 +1038,8 @@ document.addEventListener("mousedown",e=>{if(e.target.closest("[data-mention]"))
 document.addEventListener("click",e=>{if(e.target.id==="c-bg")closeComposer()});
 document.addEventListener("change",e=>{
   const id=e.target.id,v=e.target.value,d=e.target.dataset;
-  if(id==="area"){S.area=v;try{localStorage.setItem("jh_area",v)}catch(_){}render();return}
+  if(id==="area"){S.area=v;try{localStorage.setItem("jh_area:"+S.city,v)}catch(_){}render();return}
+  if(id==="city-pick"){setCity(v);return}
   if(id==="wf-body"){S.wf.body=v;render();return}
   if(id==="wf-area"){S.wf.area=v;render();return}
   if(id==="age"){S.auth.age=e.target.checked;return}
@@ -1074,11 +1145,12 @@ async function onAuth(session){
   if(qp){history.replaceState(null,"",location.pathname+"#post/"+encodeURIComponent(qp))}
   S.route=parseRoute();render();
   if(!configured){render();return}
+  try{await loadCities()}catch(e){S.failed=true}
   sb.auth.onAuthStateChange((_ev,session)=>{setTimeout(()=>onAuth(session),0)});
   const {data}=await sb.auth.getSession();await onAuth(data.session);
   try{await loadRef();await loadPosts();await loadMine()}catch(e){S.failed=true}
   render();
-  if(S.route.name==="post"){try{await loadThread(S.route.id)}catch(e){S.failed=true}render()}
+  if(S.route.name==="post"){try{await loadThread(S.route.id);await followPostCity()}catch(e){S.failed=true}render()}
   setInterval(()=>{if(C)return;if(S.isAdmin||(document.visibilityState==="visible"&&["feed","board"].includes(S.route.name)))refreshAll()},S.isAdmin?45000:60000);
   if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 })();

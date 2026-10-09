@@ -40,6 +40,9 @@ img,video{max-width:100%}
 header{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);display:flex;justify-content:space-between;align-items:center;gap:12px;padding-block:12px 10px;border-bottom:1px solid var(--line)}
 .brand{font-weight:800;font-size:19px;display:flex;align-items:center;gap:8px;color:var(--fg);text-decoration:none}
 .brand i{width:10px;height:10px;border-radius:50%;background:var(--ink)}
+.citysel{display:inline-flex;align-items:center;gap:4px;background:var(--soft);border-radius:999px;padding:3px 8px 3px 10px;font:600 13px var(--font);color:var(--ink)}
+.citysel select{border:0;background:none;color:var(--ink);font:600 13px var(--font);padding:2px 0;cursor:pointer;max-width:130px}
+.citysel[hidden]{display:none}
 .seg{display:inline-flex;flex-wrap:wrap;gap:2px;background:var(--soft);border-radius:999px;padding:3px}
 .seg button{border:0;background:none;color:var(--muted);font:600 13px var(--font);padding:3px 10px;border-radius:999px;cursor:pointer}
 .seg button[aria-pressed="true"]{background:var(--bg);color:var(--ink);box-shadow:0 1px 2px rgba(28,26,36,.12)}
@@ -239,6 +242,7 @@ footer{margin-top:32px;font-size:13px;color:var(--muted);text-align:center}
     <a class="brand" href="#feed"><i></i><span class="bt"><span data-t="brand">Jan Hisaab</span><small data-t="tagline">Janta is the Boss</small></span></a>
     <div class="hdr-r">
       <button class="admin-btn" id="admin-btn" hidden>Admin</button>
+      <label class="citysel" id="city-wrap" hidden><span aria-hidden="true">📍</span><select id="city-pick" aria-label="City"></select></label>
       <div class="seg" role="group" aria-label="Language">
         <button data-l="en" aria-pressed="true">EN</button>
         <button data-l="mr" aria-pressed="false">मराठी</button>
