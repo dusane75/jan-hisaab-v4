@@ -1,0 +1,18 @@
+{
+  "name": "Jan Hisaab Nashik — Janta is the Boss",
+  "short_name": "Jan Hisaab",
+  "description": "Post a civic problem in Nashik, tag who is responsible, and watch the clock until it's fixed.",
+  "start_url": "/?source=app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#4b2a7a",
+  "lang": "mr",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
