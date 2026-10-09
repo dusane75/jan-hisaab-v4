@@ -34,6 +34,24 @@ const isLink = u => typeof u==="string" && u.length<=500 && /^https:\/\/[a-z0-9.
 function linkLabel(u){try{const h=new URL(u).hostname.replace(/^www\./,"");if(/(^|\.)(drive|docs)\.google\.com$/.test(h))return t("drive_file");if(/photos\.(google\.com|app\.goo\.gl)$/.test(h))return t("gphotos");return h}catch(_){return"link"}}
 const STATUSES = ["open","seen","work","done"];
 const CITY_AREAS = ["mla-nashik-central","mla-nashik-east","mla-nashik-west","mla-deolali"], MALEGAON_AREAS = ["mla-malegaon-central"];
+/* Which fields each department can actually act on.
+   pin  : the problem sits at a spot on the map (street, plot, pipeline) -> ask for GPS + landmark, and for a constituency
+   ward : the department works prabhag-wise -> ask for the prabhag (NMC only; prabhag 1-31 is its numbering)
+   place: label for the one free-text "where" field, so a bus depot isn't asked for a street name
+   Anything not listed falls back to PIN_FORM below. */
+const BODY_FORM = {
+  nmc:{pin:true,ward:true}, "malegaon-mc":{pin:true},
+  gp:{pin:true}, zp:{pin:true}, pwd:{pin:true}, nhai:{pin:true}, wrd:{pin:true}, mpcb:{pin:true},
+  police:{pin:true,place:"pl_police"}, msedcl:{pin:true,place:"pl_msedcl"},
+  msrtc:{pin:false,place:"pl_msrtc"}, railway:{pin:false,place:"pl_railway"},
+  health:{pin:false,place:"pl_health"}, kumbh:{pin:false,place:"pl_kumbh"},
+  collector:{pin:false,place:"pl_office"}
+};
+const PIN_FORM = {pin:true};
+const formFor = id => (id && BODY_FORM[id]) || PIN_FORM;
+const needsPin  = id => !!formFor(id).pin;
+const needsWard = id => !!formFor(id).ward;
+const placeKey  = id => formFor(id).place || "f_place";
 const ICON = {
   heart:'<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>',
   reply:'<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>',
@@ -193,16 +211,21 @@ function mediaHtml(p){
   return p.media_type==="video"?`<div class="media"><video src="${u}" controls playsinline muted loop preload="metadata"></video></div>`
     :`<div class="media"><img src="${u}" alt="" loading="lazy"></div>`;
 }
+/* Everyone gets the full kit, not just admins: the picture card is what actually
+   travels on WhatsApp and Instagram, and the ready caption carries the day-count
+   and the right official handles so the post pressures someone. */
 function shareMenu(p){
-  const url=shareUrl(p.id), b=bodyById(p.body_id);
-  const txt=(p.caption.length>160?p.caption.slice(0,157)+"…":p.caption)+(b?` (${L(b.short)||L(b.name)})`:"")+" #JanHisaabNashik";
-  const e=encodeURIComponent;
+  const url=shareUrl(p.id), c=kitCaptions(p), e=encodeURIComponent;
   return `<div class="menu">
-   ${navigator.share?`<button class="btn sm" data-nshare="${esc(p.id)}">${t("share")}…</button>`:""}
-   <a class="btn sm ghost" target="_blank" rel="noopener" href="https://wa.me/?text=${e(txt+" "+url)}">WhatsApp</a>
-   <a class="btn sm ghost" target="_blank" rel="noopener" href="https://twitter.com/intent/tweet?text=${e(txt)}&url=${e(url)}">X</a>
+   ${navigator.canShare?`<button class="btn sm" data-kshare="${esc(p.id)}">🖼 ${t("share_card")}</button>`:""}
+   <button class="btn sm ${navigator.canShare?"ghost":""}" data-kcard="${esc(p.id)}">${t("kit_card")}</button>
+   <button class="btn sm ghost" data-kcopy="${esc(p.id)}">${t("copy_caption")}</button>
+   <a class="btn sm ghost" target="_blank" rel="noopener" href="https://wa.me/?text=${e(c.x+"\n"+url)}">WhatsApp</a>
+   <a class="btn sm ghost" target="_blank" rel="noopener" href="https://twitter.com/intent/tweet?text=${e(c.x)}&url=${e(url)}">X</a>
    <a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.facebook.com/sharer/sharer.php?u=${e(url)}">Facebook</a>
-   <button class="btn sm ghost" data-copy="${esc(url)}">${t("copy_link")}</button></div>`;
+   ${navigator.share?`<button class="btn sm ghost" data-nshare="${esc(p.id)}">${t("share")}…</button>`:""}
+   <button class="btn sm ghost" data-copy="${esc(url)}">${t("copy_link")}</button>
+   <p class="note" style="flex-basis:100%;margin:4px 0 0">${t("share_tip")}</p></div>`;
 }
 function moreMenu(p){
   const mine=S.user&&p.user_id===S.user.id;let h="";
@@ -439,7 +462,12 @@ const screens = {
   if(!configured)return `<h1>${t("t_acc")}</h1>`+status();
   if(!S.user){
    const A=S.auth, up=A.mode==="up";
-   return `<h1>${up?t("sign_up_h"):t("sign_in_h")}</h1><p class="lead">${up?t("sign_p_up"):t("sign_p_in")}</p>
+   return `<h1>${up?t("sign_up_h"):t("sign_in_h")}</h1>
+    <div class="seg" role="group" aria-label="${t("t_acc")}" style="display:flex;width:100%;margin:12px 0 14px;padding:4px">
+     <button type="button" data-authmode="up" aria-pressed="${up}" style="flex:1;padding:9px 10px;font-size:15px">${t("tab_signup")}</button>
+     <button type="button" data-authmode="in" aria-pressed="${!up}" style="flex:1;padding:9px 10px;font-size:15px">${t("tab_signin")}</button>
+    </div>
+    <p class="lead">${up?t("sign_p_up"):t("sign_p_in")}</p>
     <form id="auth-form" class="stack" novalidate>
      <div><label for="email">${t("email")}</label><input id="email" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" value="${esc(A.email)}"></div>
      <div><label for="password">${t("password")}</label><input id="password" type="password" autocomplete="${up?"new-password":"current-password"}" placeholder="••••••••" value="${esc(A.password)}">${up?`<p class="note" style="margin:4px 0 0">${t("pw_hint")}</p>`:""}</div>
@@ -447,8 +475,8 @@ const screens = {
      <p class="rules" style="margin:0">${t("rules")}</p>`:""}
      <div class="err" id="auth-err">${esc(A.err)}</div>
      <button class="btn" type="submit" ${A.busy?"disabled":""}>${A.busy?t("sending"):(up?t("create_btn"):t("signin_btn"))}</button>
-     <button class="btn ghost" type="button" id="auth-switch">${up?t("to_signin"):t("to_signup")}</button>
      ${up?"":`<button type="button" class="back" id="forgot" style="padding:0;text-align:left">${t("forgot")}</button>`}
+     <p class="note" style="margin:6px 0 0">${up?t("to_signin"):t("to_signup")} <button type="button" data-authmode="${up?"in":"up"}" style="border:0;background:none;padding:0;font:inherit;cursor:pointer;color:var(--ink);text-decoration:underline">${up?t("tab_signin"):t("tab_signup")}</button></p>
     </form>`;
   }
   const mine=(S.posts||[]).filter(p=>p.user_id===S.user.id);
@@ -635,15 +663,24 @@ function renderComposer(){
    <div class="cap-wrap"><textarea id="c-cap" maxlength="1000" placeholder="${esc(post?t("caption_ph"):resol?t("resol_ph"):t("reply_ph"))}">${esc(C.caption)}</textarea><div id="c-ml"></div></div>
    <div id="c-media">${mediaPickHtml()}</div>
    ${post?`<div id="c-cat">${catrowHtml()}</div>
-   <div class="two"><div><label for="c-area">${t("constit")}</label><select id="c-area"><option value="">${t("choose")}</option>${mlas().map(r=>opt(r.id,r.constituency,C.area)).join("")}</select></div>
-    <div><label for="c-where">${t("f_where")}</label><select id="c-where"><option value="">${t("choose")}</option>${["city","malegaon","rural"].map(w=>opt(w,t("w_"+w),C.where)).join("")}</select></div></div>
-   <div id="c-loc">${locHtml()}</div>
-   <div class="two"><div><label for="c-place">${t("f_place")}</label><input id="c-place" maxlength="120" placeholder="${esc(t("f_place_ph"))}" value="${esc(C.place)}"></div>
-    <div id="c-prab">${prabHtml()}</div></div>
    <div id="c-tags">${tagboxHtml()}</div>
+   <div id="c-wb">${whereBlockHtml()}</div>
    <details class="more"><summary>${t("f_links")}</summary><div class="stack" style="gap:6px;margin-top:8px">${[0,1,2].map(n=>`<input id="c-link${n}" type="url" inputmode="url" maxlength="500" placeholder="https://drive.google.com/…" value="${esc(C.links[n])}">`).join("")}<p class="note" style="margin:0">${t("f_links_hint")}</p></div></details>
    <p class="rules" style="margin:0">${t("rules")}</p>`:""}
    <div class="err" id="c-err">${esc(C.err)}</div></form></div>`;
+}
+/* Only the fields the chosen department can act on. A bus-pass complaint should not
+   be asked for a ward number, and a pothole should not be asked for a depot name. */
+function whereBlockHtml(){
+  if(!C||C.mode!=="post")return"";
+  const pin=needsPin(C.body), opt_=` <span class="note">(${t("optional")})</span>`;
+  const pk=placeKey(C.body);
+  const area=`<div><label for="c-area">${t("constit")}${pin?"":opt_}</label><select id="c-area"><option value="">${t("choose")}</option>${mlas().map(r=>opt(r.id,r.constituency,C.area)).join("")}</select></div>`;
+  const where=pin?`<div><label for="c-where">${t("f_where")}</label><select id="c-where"><option value="">${t("choose")}</option>${["city","malegaon","rural"].map(w=>opt(w,t("w_"+w),C.where)).join("")}</select></div>`:"";
+  const place=`<div><label for="c-place">${t(pk)}${pin?"":opt_}</label><input id="c-place" maxlength="120" placeholder="${esc(t(pk+"_ph"))}" value="${esc(C.place)}"></div>`;
+  return `<div class="two">${area}${where}</div>
+   ${pin?`<div id="c-loc">${locHtml()}</div>`:""}
+   <div class="two">${place}<div id="c-prab">${prabHtml()}</div></div>`;
 }
 function locHtml(){
   if(!C)return"";
@@ -651,7 +688,7 @@ function locHtml(){
   return `<button type="button" class="btn ghost" id="c-geo" ${C.loc==="busy"?"disabled":""}>📍 ${C.loc==="busy"?t("loc_busy"):t("loc_btn")}</button>${C.loc&&C.loc!=="busy"?`<p class="err" style="margin:4px 0 0">${t(C.loc)}</p>`:""}`;
 }
 function prabHtml(){
-  if(!C||C.where!=="city")return"";
+  if(!C||!needsWard(C.body)||C.where!=="city")return"";
   return `<label for="c-prabhag">${t("prabhag")}</label><select id="c-prabhag"><option value="">${t("prabhag_any")}</option>${Array.from({length:31},(_,i)=>opt(String(i+1),t("prabhag_n")+" "+(i+1),String(C.prabhag||""))).join("")}</select>`;
 }
 const DIST={s:19.3,n:21.0,w:73.3,e:75.1};
@@ -676,12 +713,19 @@ async function getLocation(){
     }catch(_){}
   },()=>{if(C){C.loc="loc_fail";refreshComposerParts()}},{enableHighAccuracy:true,timeout:15000,maximumAge:60000});
 }
+/* Re-draw the conditional fields, keeping whatever the user already typed in them. */
+function refreshWhereBlock(){
+  if(!C)return;
+  const pl=document.getElementById("c-place");if(pl)C.place=pl.value;
+  if(!needsPin(C.body)){C.lat=null;C.lng=null;C.loc=""}
+  if(!needsWard(C.body))C.prabhag="";
+  const wb=document.getElementById("c-wb");if(wb)wb.innerHTML=whereBlockHtml();
+}
 function refreshComposerParts(){
   if(!C)return;
-  const lc=document.getElementById("c-loc");if(lc)lc.innerHTML=locHtml();
-  const pb=document.getElementById("c-prab");if(pb)pb.innerHTML=prabHtml();
   const a=document.getElementById("c-cat");if(a)a.innerHTML=catrowHtml();
   const b=document.getElementById("c-tags");if(b)b.innerHTML=tagboxHtml();
+  refreshWhereBlock();
   const m=document.getElementById("c-media");if(m)m.innerHTML=mediaPickHtml();
   const e=document.getElementById("c-err");if(e)e.textContent=C.err;
   const s=document.getElementById("c-submit");if(s){s.disabled=C.busy;s.textContent=C.busy?t("posting"):t("publish")}
@@ -755,8 +799,11 @@ async function submitComposer(){
   const cap=C.caption.trim();
   if(C.mode==="post"){
     if(cap.length<10){C.err=t("need_title");refreshComposerParts();return}
-    if(!C.cat||!C.area||!C.body){C.err=t("need_fields");refreshComposerParts();return}
-    if(C.lat==null&&C.place.trim().length<3){C.err=t("need_loc");refreshComposerParts();return}
+    if(!C.cat||!C.body){C.err=t("need_fields");refreshComposerParts();return}
+    if(needsPin(C.body)){
+      if(!C.area){C.err=t("need_fields");refreshComposerParts();return}
+      if(C.lat==null&&C.place.trim().length<3){C.err=t("need_loc");refreshComposerParts();return}
+    }
   }else if(cap.length<2){C.err=t("need_reply");refreshComposerParts();return}
   const links=[];
   if(C.mode==="post")for(const raw of C.links){const u=raw.trim();if(!u)continue;if(!isLink(u)){C.err=t("bad_link");refreshComposerParts();return}if(!links.includes(u))links.push(u)}
@@ -765,7 +812,7 @@ async function submitComposer(){
   try{
     media=await uploadMedia();
     const row=C.mode==="post"
-      ?{caption:cap,cat:C.cat,area:C.area,place:C.place.trim()||null,body_id:C.body,mentions:tagsOf(),links,media_path:media.path,media_type:media.type,lat:C.lat,lng:C.lng,prabhag:C.where==="city"&&C.prabhag?+C.prabhag:null}
+      ?{caption:cap,cat:C.cat,area:C.area||null,place:C.place.trim()||null,body_id:C.body,mentions:tagsOf(),links,media_path:media.path,media_type:media.type,lat:C.lat,lng:C.lng,prabhag:needsWard(C.body)&&C.prabhag?+C.prabhag:null}
       :{caption:cap,parent_id:C.parentId,media_path:media.path,media_type:media.type,kind:C.mode==="resolution"?"resolution":"reply"};
     const {data,error}=await sb.from("posts").insert(row).select(POST_COLS).single();
     if(error)throw error;
@@ -913,6 +960,7 @@ document.addEventListener("click",async e=>{
   // account
   if(el.id==="signout"){await sb.auth.signOut();return}
   if(el.id==="del-acc"){if(!S.accDelArm){S.accDelArm=true;render()}else deleteAccount();return}
+  if(d.authmode){if(S.auth.mode!==d.authmode){S.auth.mode=d.authmode;S.auth.err="";S.auth.password="";render()}return}
   if(el.id==="auth-switch"){S.auth.mode=S.auth.mode==="up"?"in":"up";S.auth.err="";render();return}
   if(el.id==="forgot"){doReset();return}
 });
@@ -947,7 +995,7 @@ document.addEventListener("input",e=>{
   if(id==="new-pw"){S.newPw=e.target.value;return}
   if(id==="off-email"){S.offDraft.email=e.target.value;return}
   if(!C)return;
-  if(id==="c-cap"){C.caption=e.target.value;updateMentionList(e.target);const prev=C.cat+"|"+C.body;detect();if(prev!==C.cat+"|"+C.body){const a=document.getElementById("c-cat");if(a)a.innerHTML=catrowHtml();const b=document.getElementById("c-tags");if(b)b.innerHTML=tagboxHtml()}return}
+  if(id==="c-cap"){C.caption=e.target.value;updateMentionList(e.target);const prev=C.cat+"|"+C.body;detect();if(prev!==C.cat+"|"+C.body){const a=document.getElementById("c-cat");if(a)a.innerHTML=catrowHtml();const b=document.getElementById("c-tags");if(b)b.innerHTML=tagboxHtml();refreshWhereBlock()}return}
   if(id==="c-place"){C.place=e.target.value;return}
   const lm=id&&id.match(/^c-link(\d)$/);if(lm){C.links[+lm[1]]=e.target.value}
 });
