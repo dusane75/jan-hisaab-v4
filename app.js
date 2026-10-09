@@ -114,17 +114,18 @@ const pendingQueue = () => (S.posts||[]).filter(p=>p.approved===false&&!p.reject
 const ROLE_ORDER = {guardian:0,collector:1,mayor:2,dymayor:3,commissioner:4,cp:5,mp:6,mla:7,corporator:8};
 const OFFICIAL_ROLES = ["guardian","collector","mayor","dymayor","commissioner","cp"];
 const roleRep = role => (S.reps||[]).find(r=>r.role===role);
-const corpsOf = n => n ? (S.reps||[]).filter(r=>r.role==="corporator"&&+r.prabhag===+n) : [];
+const corpsOf = (n,bodyId) => n ? (S.reps||[]).filter(r=>r.role==="corporator"&&+r.prabhag===+n&&(!bodyId||!r.body||r.body===bodyId)) : [];
 /* Escalation ladder: who is answerable on which day. Nashik uses 0/7/14/21/30/45,
    where day 21 matches the Aaple Sarkar and CPGRAMS deadline; each city sets its own.
    "heads" maps a department to the role that answers for it. */
-function headOf(bodyId){const r=cityVal("heads")[bodyId];return r?roleRep(r):null}
+function headOf(bodyId){const h=cityVal("heads")[bodyId];return h?(repById(h)||roleRep(h)||null):null}
 const isUrban = w => !!(zones().find(z=>z.id===w)||{}).urban;
 function ladderFor(p){
   const D=escDays(), urban=isUrban(whereFor(p.area));
+  const z=zones().find(x=>x.id===whereFor(p.area))||{};
   const b=bodyById(p.body_id), mla=repById(p.area), mp=mla&&repById(mla.mp), head=headOf(p.body_id);
-  const mayor=urban?roleRep("mayor"):null, gm=roleRep("guardian"), col=roleRep("collector");
-  const corps=urban?corpsOf(p.prabhag):[];
+  const mayor=urban?(repById(z.mayor)||roleRep("mayor")):null, gm=roleRep("guardian"), col=roleRep("collector");
+  const corps=urban?corpsOf(p.prabhag,z.wardBody):[];
   return [
     {day:D[0],key:"L1",ids:[p.body_id].filter(Boolean),label:b?(L(b.short)||L(b.name)):t("L1")},
     {day:D[1],key:urban?"L2c":"L2r",ids:corps.map(r=>r.id),label:corps.length?corps.map(r=>r.name).join(", "):(urban?t("L2c")+(p.prabhag?" "+t("prabhag_n")+" "+p.prabhag:""):t("L2r"))},
@@ -661,7 +662,7 @@ async function saveLeader(){
   const base=old?{...old}:{};delete base.id;
   const data={...base,role,name,party:party||base.party||"",constituency:area||(prabhag?t("prabhag_n")+" "+prabhag:"")||base.constituency||"",checked:todayStr(),social:{...(base.social||{}),x:xh||undefined,ig:ig||undefined}};
   if(prabhag)data.prabhag=+prabhag;else delete data.prabhag;
-  const {error}=await sb.from("reps").upsert({id,data});
+  const {error}=await sb.from("reps").upsert({id,city:S.city,data});
   if(error){toast(t("save_fail"));return}
   S.lead=null;toast(t("lead_saved"));try{await loadRef()}catch(_){}render();
 }
@@ -1000,7 +1001,7 @@ document.addEventListener("click",async e=>{
     if(d.kshare&&navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],text:kitCaptions(p).ig})}catch(_){}return}
     const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=file.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);return}
   if(d.ledit){const r=repById(d.ledit);if(!r)return;S.lead={id:r.id,role:r.role,name:r.name,prabhag:r.prabhag||"",party:r.party==="—"?"":(r.party||""),area:r.prabhag?"":(r.constituency||""),x:(r.social||{}).x||"",ig:(r.social||{}).ig||""};render();const f=document.getElementById("lead-form");if(f)f.scrollIntoView({behavior:"smooth",block:"center"});return}
-  if(d.ldel){if(S.delArm!==d.ldel){S.delArm=d.ldel;render();return}S.delArm=null;const {error}=await sb.from("reps").delete().eq("id",d.ldel);if(error){toast(t("save_fail"));return}try{await loadRef()}catch(_){}render();return}
+  if(d.ldel){if(S.delArm!==d.ldel){S.delArm=d.ldel;render();return}S.delArm=null;const {error}=await sb.from("reps").delete().eq("city",S.city).eq("id",d.ldel);if(error){toast(t("save_fail"));return}try{await loadRef()}catch(_){}render();return}
   if(el.id==="ld-cancel"){S.lead=null;render();return}
   if(el.id==="c-geo"&&C){getLocation();return}
   if(d.resolve){openComposer("resolution",d.resolve);return}
