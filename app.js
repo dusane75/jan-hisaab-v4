@@ -128,7 +128,7 @@ function ladderFor(p){
   const corps=urban?corpsOf(p.prabhag,z.wardBody):[];
   return [
     {day:D[0],key:"L1",ids:[p.body_id].filter(Boolean),label:b?(L(b.short)||L(b.name)):t("L1")},
-    {day:D[1],key:urban?"L2c":"L2r",ids:corps.map(r=>r.id),label:corps.length?corps.map(r=>r.name).join(", "):(urban?t("L2c")+(p.prabhag?" "+t("prabhag_n")+" "+p.prabhag:""):t("L2r"))},
+    {day:D[1],key:urban?"L2c":"L2r",ids:corps.map(r=>r.id),label:corps.length?corps.map(r=>r.name).join(", "):(urban?(p.prabhag?t("corporator")+" · "+t("prabhag_n")+" "+p.prabhag:t("L2c"))+" — "+t("not_listed"):t("L2r"))},
     {day:D[2],key:"L3",ids:head?[head.id]:[],label:head?t(head.role)+" "+head.name:(b?L(b.head):t("L3"))},
     {day:D[3],key:mayor?"L4":"L4r",ids:[mla&&mla.id,mayor&&mayor.id].filter(Boolean),label:[mla&&(t("mla")+" "+mla.name),mayor&&(t("mayor")+" "+mayor.name)].filter(Boolean).join(" · ")||t("L4r")},
     {day:D[4],key:"L5",ids:mp?[mp.id]:[],label:mp?t("mp")+" "+mp.name:t("L5")},
@@ -462,7 +462,7 @@ const screens = {
   if(F==="all"||F==="mp")body+=grp(t("mp"),R.filter(r=>r.role==="mp"));
   if(F==="all"||F==="mla")body+=grp(t("mla"),R.filter(r=>r.role==="mla"));
   if(F==="all"||F==="corporator")body+=grp(t("corporators_h"),R.filter(r=>r.role==="corporator"),t("corp_none"));
-  return `<h1>${t("home_h")}</h1><p class="lead">${t("home_p")}</p>
+  return `<h1>${t("home_h")}</h1><p class="lead">${esc(t("home_p").replace("{d}",L(city().scope)||cityName()))}</p>
    <label for="area">${t("constit")}</label><select id="area"><option value="">${t("choose")}</option>${ml.map(r=>opt(r.id,r.constituency,S.area)).join("")}</select>
    ${mla?`<h2>${t("your")}</h2><div class="list">${mp?repItem(mp):""}${repItem(mla)}</div>`:""}
    <h2>${t("reps_h")}</h2><p class="note" style="margin-top:0">${t("reps_p")}</p>
@@ -905,6 +905,14 @@ async function sendQuickReply(id){
 function findPost(id){return (S.posts||[]).find(p=>p.id===id)||(S.thread&&S.thread.id===id?S.thread:null)||(S.replies||[]).find(p=>p.id===id)}
 function patchLocal(id,patch){[S.posts,S.replies].forEach(arr=>(arr||[]).forEach(p=>{if(p.id===id)Object.assign(p,patch)}));if(S.thread&&S.thread.id===id)Object.assign(S.thread,patch)}
 async function updatePost(id,patch){
+  /* The wait counter stops on the day a problem is fixed. Without this it keeps
+     running after the fix, so a problem fixed in 3 days reads as 60 a month
+     later, and the average-fix figure on the scoreboard drifts with it. */
+  if(patch.status!==undefined){
+    const cur=findPost(id)||{};
+    if(patch.status==="done"&&!cur.fixed_on&&patch.fixed_on===undefined)patch={...patch,fixed_on:todayStr()};
+    if(patch.status!=="done"&&cur.fixed_on)patch={...patch,fixed_on:null};
+  }
   const before={...findPost(id)};patchLocal(id,patch);render();
   const {data,error}=await sb.from("posts").update(patch).eq("id",id).select(POST_COLS).single();
   if(error){patchLocal(id,before);toast(t("save_fail"))}else patchLocal(id,data);
